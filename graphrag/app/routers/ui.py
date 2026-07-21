@@ -2832,22 +2832,36 @@ async def delete_conversation(
     graphs, credentials = creds[0], creds[1]
     principal = await asyncio.to_thread(_chat_principal, credentials)
 
-    def _delete() -> None:
+    def _delete() -> tuple[bool, bool]:
+        """Returns (deleted, errored). A conversation_id lives on exactly one
+        graph, so we stop at the first graph that reports a delete. errored
+        tracks whether any graph raised, so an outage is not reported as a
+        clean "not found"."""
+        errored = False
         for graphname in graphs:
             try:
                 repo = ConversationRepository(
                     _chat_conn(graphname, credentials), principal
                 )
                 if repo.delete_conversation(conversation_id):
-                    break
+                    return True, errored
             except Exception:
+                errored = True
                 logger.debug_pii(
                     f"/conversation/{conversation_id} DELETE graph={graphname} "
                     f"request_id={req_id_cv.get()} Exception Trace:\n{traceback.format_exc()}"
                 )
+        return False, errored
 
-    await asyncio.to_thread(_delete)
-    return {"message": "Conversation deleted successfully"}
+    deleted, errored = await asyncio.to_thread(_delete)
+    if deleted:
+        return {"message": "Conversation deleted successfully"}
+    if errored:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not delete conversation due to a backend error.",
+        )
+    raise HTTPException(status_code=404, detail="Conversation not found")
 
 
 async def emit_progress(agent: TigerGraphAgent, ws: WebSocket):

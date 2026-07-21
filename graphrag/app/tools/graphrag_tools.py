@@ -32,6 +32,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
+from common.chat_history.guard import mentions_chat_history
 from tools import tool_guards as guards
 from tools.validation_utils import MapQuestionToSchemaException
 
@@ -176,6 +177,11 @@ def _cypher_retrieve(ctx: GraphRAGToolContext, question: str) -> dict:
             cypher = ctx.cypher_gen._run(question, gen_history)
         except ValueError as exc:
             gen_history.append(f"{i}: Error: {exc}\n")
+            continue
+        named = mentions_chat_history(cypher)
+        if named:
+            logger.warning("Refused agent cypher naming conversation type %r", named)
+            gen_history.append(f"{i}: {cypher}\n\tError: {named} is not queryable\n")
             continue
         response = ctx.conn.gsql(cypher)
         json_str = "\n".join(response.split("\n")[1:])

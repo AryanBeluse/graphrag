@@ -95,6 +95,13 @@ class PrometheusMetrics(metaclass=SingletonMeta):
                 ["collection_name", "method_name"],
             )
 
+            # collect metrics for chat execution-trace persistence
+            self.chat_trace_write_total = Counter(
+                "chat_trace_write_total",
+                "Chat execution-trace write outcomes",
+                ["outcome"],
+            )
+
             # collect metrics for GraphRAG
             self.graphrag_endpoint_duration_seconds = Histogram(
                 "graphrag_endpoint_duration_seconds",

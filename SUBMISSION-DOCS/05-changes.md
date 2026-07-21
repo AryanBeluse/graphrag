@@ -59,9 +59,12 @@
 | `docker-compose.yml` | Removes the `chat-history` service; enables the previously-commented-out `tigergraph` service |
 | `configs/nginx.conf` | Converted from a git symlink to a real file (symlinks break on Windows checkout); adds the WebSocket upgrade route for `/ui/*/chat`. No route change was needed for this feature: the retired service was never reachable through nginx |
 
-## Deliberately left alone
+## Legacy cleanup (completed)
 
-- **`chat-history/`** (Go source): disconnected but still on disk. See
-  [02-architecture.md](02-architecture.md).
-- **`graphrag_config["chat_history_api"]`**: inert, kept so existing config files
-  keep loading.
+- **`chat-history/`** (Go source): deleted. Remaining references removed from
+  `graphrag-k8s.yml`, the tutorial Compose/K8s manifests, the CI build
+  workflows, the UI settings field, and the README. See
+  [02-architecture.md](02-architecture-design-decisions-tradeoffs.md).
+- **`graphrag_config["chat_history_api"]`**: removed from `configs/server_config.json`
+  and the tutorial variants. It was inert (no runtime code read it), so removal
+  does not change config loading.

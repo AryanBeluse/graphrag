@@ -35,6 +35,12 @@ import json
 import logging
 from typing import Optional
 
+from common.chat_history.guard import (
+    ChatHistoryAccessDenied,
+    assert_agent_may_call,
+    is_chat_history_query,
+)
+
 logger = logging.getLogger(__name__)
 
 # Per-request TigerGraph credentials for the tg-mcp tools.
@@ -130,6 +136,8 @@ def tg_run_query(ctx, query_text: str) -> dict:
     """Run an interpreted (dynamic) GSQL query as the logged-in user."""
     if not AVAILABLE:
         return {"ok": False, "summary": "tigergraph-mcp unavailable", "context": None, "citations": []}
+
+    assert_agent_may_call("tg_run_query", (query_text,), {})
     ctx.emit("Running a graph query (tigergraph-mcp)")
     _ensure(ctx)
     g = getattr(ctx.conn, "graphname", "")
@@ -140,6 +148,10 @@ def tg_run_installed_query(ctx, query_name: str, params: Optional[dict] = None) 
     """Run a pre-installed query by name as the logged-in user."""
     if not AVAILABLE:
         return {"ok": False, "summary": "tigergraph-mcp unavailable", "context": None, "citations": []}
+    if is_chat_history_query(query_name):
+        logger.warning("Refused tg_run_installed_query naming chat query %r", query_name)
+        raise ChatHistoryAccessDenied(f"{query_name} is not available to the assistant.")
+    assert_agent_may_call("tg_run_installed_query", (query_name, params), {})
     ctx.emit(f"Running installed query {query_name} (tigergraph-mcp)")
     _ensure(ctx)
     g = getattr(ctx.conn, "graphname", "")
@@ -156,6 +168,11 @@ def tg_get_neighbors(ctx, vertex_type: str, vertex_id: str,
     """Expand neighbors of a vertex as the logged-in user (no GSQL needed)."""
     if not AVAILABLE:
         return {"ok": False, "summary": "tigergraph-mcp unavailable", "context": None, "citations": []}
+    assert_agent_may_call(
+        "tg_get_neighbors",
+        (vertex_type, vertex_id, edge_type, target_vertex_type),
+        {},
+    )
     ctx.emit("Expanding neighbors (tigergraph-mcp)")
     _ensure(ctx)
     g = getattr(ctx.conn, "graphname", "")

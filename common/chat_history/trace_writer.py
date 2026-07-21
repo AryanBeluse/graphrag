@@ -17,35 +17,68 @@ from __future__ import annotations
 import logging
 import queue
 import threading
-from typing import Callable, Optional
+from typing import Callable, List
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MAX_QUEUE = 512
+
+DEFAULT_MAX_QUEUE = 2048
+
+DEFAULT_WORKERS = 4
+
+try:  
+    from common.metrics.prometheus_metrics import metrics as _metrics
+except Exception: 
+    _metrics = None
+
+
+def _record(outcome: str) -> None:
+    if _metrics is not None:
+        try:
+            _metrics.chat_trace_write_total.labels(outcome=outcome).inc()
+        except Exception:  
+            pass
 
 
 class TraceWriter:
-    """Serializes trace writes onto a worker thread."""
+    """Drains trace writes on a pool of background worker threads.
 
-    def __init__(self, max_queue: int = DEFAULT_MAX_QUEUE):
+    ``submit`` never blocks and never raises so the response path is never
+    slowed by a slow database. Persistence is therefore best-effort: a burst
+    that outruns the workers past the bounded queue is dropped rather than
+    buffered without limit (which would risk memory) or blocked on (which
+    would add latency). Drops are counted and metered so they are observable
+    rather than silent.
+    """
+
+    def __init__(
+        self,
+        max_queue: int = DEFAULT_MAX_QUEUE,
+        num_workers: int = DEFAULT_WORKERS,
+    ):
         self._queue: queue.Queue = queue.Queue(maxsize=max_queue)
-        self._thread: Optional[threading.Thread] = None
+        self._threads: List[threading.Thread] = []
+        self._num_workers = max(1, int(num_workers))
         self._lock = threading.Lock()
+        self._stats_lock = threading.Lock()
         self._stopping = threading.Event()
         self._submitted = 0
         self._written = 0
         self._dropped = 0
         self._failed = 0
 
-    def _ensure_worker(self) -> None:
+    def _ensure_workers(self) -> None:
         with self._lock:
-            if self._thread is not None and self._thread.is_alive():
+            self._threads = [t for t in self._threads if t.is_alive()]
+            if len(self._threads) >= self._num_workers:
                 return
             self._stopping.clear()
-            self._thread = threading.Thread(
-                target=self._drain, name="chat-trace-writer", daemon=True
-            )
-            self._thread.start()
+            while len(self._threads) < self._num_workers:
+                thread = threading.Thread(
+                    target=self._drain, name="chat-trace-writer", daemon=True
+                )
+                thread.start()
+                self._threads.append(thread)
 
     def _drain(self) -> None:
         while not self._stopping.is_set():
@@ -55,9 +88,13 @@ class TraceWriter:
                 continue
             try:
                 job()
-                self._written += 1
+                with self._stats_lock:
+                    self._written += 1
+                _record("written")
             except Exception:
-                self._failed += 1
+                with self._stats_lock:
+                    self._failed += 1
+                _record("failed")
                 logger.warning("Trace write failed", exc_info=True)
             finally:
                 self._queue.task_done()
@@ -67,17 +104,21 @@ class TraceWriter:
 
         Never raises and never blocks: the caller is on the response path.
         """
-        self._ensure_worker()
-        self._submitted += 1
+        self._ensure_workers()
+        with self._stats_lock:
+            self._submitted += 1
         try:
             self._queue.put_nowait(job)
             return True
         except queue.Full:
-            self._dropped += 1
+            with self._stats_lock:
+                self._dropped += 1
+                dropped_total = self._dropped
+            _record("dropped")
             logger.warning(
                 "Trace queue full (%d); dropping trace. dropped_total=%d",
                 self._queue.maxsize,
-                self._dropped,
+                dropped_total,
             )
             return False
 

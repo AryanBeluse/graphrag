@@ -76,7 +76,7 @@ class TestListMyConversations:
         assert res["ok"] is True
         rows = res["context"]["conversations"]
         assert rows[0]["conversation_id"] == "c1"
-        assert rows[0]["name"] == "budget chat"
+        assert rows[0]["title"] == "budget chat"
         assert rows[0]["created"].startswith("2026-")
 
     def test_limit_is_server_capped(self):

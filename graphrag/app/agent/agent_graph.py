@@ -40,6 +40,7 @@ from supportai.retrievers import (HybridRetriever, SimilarityRetriever,
 from tools import MapQuestionToSchemaException
 from typing_extensions import TypedDict
 
+from common.chat_history.guard import mentions_chat_history
 from common.logs.log import req_id_cv
 from common.metrics.prometheus_metrics import metrics as pmetrics
 from common.py_schemas import GraphRAGResponse, MapQuestionToSchemaResponse
@@ -375,6 +376,11 @@ class TigerGraphAgentGraph:
             except ValueError as e:
                 logger.warning(f"Cypher generation failed: {e}")
                 gen_history.append(f"{i}: Error: {e}\n")
+                continue
+            named = mentions_chat_history(cypher)
+            if named:
+                logger.warning("Refused agent cypher naming conversation type %r", named)
+                gen_history.append(f"{i}: {cypher}\n\tError: {named} is not queryable\n")
                 continue
             response = self.db_connection.gsql(cypher)
             response_lines = response.split("\n")

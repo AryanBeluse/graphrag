@@ -576,7 +576,6 @@ Copy the below code into `configs/server_config.json`. You shouldn’t need to c
     "graphrag_config": {
         "reuse_embedding": false,
         "ecc": "http://graphrag-ecc:8001",
-        "chat_history_api": "http://chat-history:8002",
         "chunker": "semantic",
         "extractor": "llm",
         "top_k": 5,
@@ -591,7 +590,6 @@ Copy the below code into `configs/server_config.json`. You shouldn’t need to c
 | ---------------------------- | ----------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `reuse_embedding`            | bool        | `true`                             | Reuse existing embeddings instead of regenerating them.                                                                                                                                                                                                                                                                          |
 | `ecc`                        | string      | `"http://graphrag-ecc:8001"`       | URL of the knowledge graph build service. No change needed when using the provided Docker Compose file.                                                                                                                                                                                                                          |
-| `chat_history_api`           | string      | `"http://chat-history:8002"`       | URL of the chat history service. No change needed when using the provided Docker Compose file.                                                                                                                                                                                                                                   |
 | `chunker`                    | string      | `"semantic"`                       | Default document chunker. Options: `semantic`, `character`, `regex`, `markdown`, `html`, `recursive`.                                                                                                                                                                                                                            |
 | `extractor`                  | string      | `"llm"`                            | Entity extraction method. Options: `llm`, `graphrag`.                                                                                                                                                                                                                                                                            |
 | `strict_mode`                | bool        | `false`                            | Dynamic-schema enforcement during extraction. When `true`, entities and relationships that don't match the domain schema are dropped. When `false` (default), unmatched nodes fall back to generic `Entity` vertices.                                                                                                            |
@@ -636,19 +634,23 @@ Copy the below code into `configs/server_config.json`. You shouldn’t need to c
 
 ### Chat History Configuration
 
-Copy the below code into `configs/server_config.json`. You shouldn’t need to change anything unless you change the port of the chat history service in the Docker Compose file.
+Chat history and execution traces are stored in TigerGraph alongside the knowledge graph; no separate service or database file is required. The optional `chat_config` block in `configs/server_config.json` tunes access and retention — omit it to use the defaults shown below.
 
 ```json
 {
-    "chat-history": {
-        "apiPort":"8002",
-        "dbPath": "chats.db",
-        "dbLogPath": "db.log",
-        "logPath": "requestLogs.jsonl",
-        "conversationAccessRoles": ["superuser", "globaldesigner"]
+    "chat_config": {
+        "conversationAccessRoles": ["superuser", "globaldesigner"],
+        "traceRetentionDays": 30,
+        "traceRetentionSweepHours": 24
     }
 }
 ```
+
+- `conversationAccessRoles` — roles allowed to view all users' feedback in the admin feedback view. Everyone else sees only their own.
+- `traceRetentionDays` — traces older than this are expired by a background sweep. Set to `0` to disable expiry.
+- `traceRetentionSweepHours` — how often the expiry sweep runs.
+
+Message ordering within a conversation uses a per-message sequence number assigned on write, with the message's creation time as a tiebreaker on read. Because a conversation is a single user talking to one assistant in turn order, sequence assignment is not made atomic; a rare concurrent append yields stable ordering via the creation-time tiebreaker rather than any data loss.
 
 [Go back to top](#top)
 

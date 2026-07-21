@@ -188,13 +188,13 @@ Configuration is under `chat_config` in `server_config.json`:
 
 ## Status of the legacy chat-history service
 
-The Go chat-history service is retired and disconnected but remains in the repository pending mechanical cleanup.
+The Go chat-history service is retired, disconnected, and has now been fully removed from the repository.
 
-- It has been removed from `docker-compose.yml`, including its image, build context, and port `8002`.
-- No traffic routes to it. Even before retirement, the UI called `graphrag:8000/ui/*`, and the Python service proxied requests to `chat-history:8002`; nginx never exposed the Go service directly.
-- The `chat-history/` source remains because deleting it also requires updates to `graphrag-k8s.yml`, CI workflows, a UI settings field, and the README. Those changes do not affect the behavior described here.
-- `graphrag_config["chat_history_api"]` is inert and retained only so existing `server_config.json` files continue to load. It should be deprecated or removed because a no-op configuration option is misleading.
-- The legacy settings `apiPort`, `dbPath`, `dbLogPath`, and `logPath` have been removed because they configured the retired SQLite store.
+- It was removed from `docker-compose.yml`, including its image, build context, and port `8002`.
+- No traffic routed to it. Even before retirement, the UI called `graphrag:8000/ui/*`, and the Python service proxied requests to `chat-history:8002`; nginx never exposed the Go service directly.
+- The mechanical cleanup is complete: the `chat-history/` Go source directory has been deleted, and its remaining references were removed from `graphrag-k8s.yml`, the tutorial Compose/K8s manifests, the CI build workflows (`.github/workflows/onprem-build*.yaml`), the UI settings field, and the README.
+- `graphrag_config["chat_history_api"]` has been removed from the config files (`configs/server_config.json` and the tutorial variants). It was inert no runtime code read it so removing it does not change loading behavior.
+- The legacy settings `apiPort`, `dbPath`, `dbLogPath`, and `logPath` were removed because they configured the retired SQLite store.
 
 The legacy service is not a fallback, and no active code path can use it.
 
