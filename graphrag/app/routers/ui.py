@@ -1728,6 +1728,8 @@ def _migration_apply_inner(
     # we'd push the un-templated body and the next rebuild's hybrid/
     # community walks wouldn't traverse domain edges.
     from common.db.retriever_render import TEMPLATED_RETRIEVERS, render_retriever_body
+
+    setup_conn = conn.as_admin() if hasattr(conn, "as_admin") else conn
     for q_path, was_installed in paths_to_create:
         q_name = os.path.splitext(os.path.basename(q_path))[0]
         try:
@@ -1752,13 +1754,13 @@ def _migration_apply_inner(
             conn.graphname = graphname
             tg_err = None
             try:
-                res = conn.createQuery(q_body)
+                res = setup_conn.createQuery(q_body)
                 tg_err = create_response_error(res)
             except Exception as create_exc:
                 tg_err = create_response_error(http_error_response_body(create_exc))
                 if not tg_err:
                     logger.info(f"Migration: createQuery transport error for '{q_name}'; gsql fallback: {create_exc}")
-                    gres = conn.gsql(f"USE GRAPH {graphname}\nBEGIN\n{q_body}\nEND\n")
+                    gres = setup_conn.gsql(f"USE GRAPH {graphname}\nBEGIN\n{q_body}\nEND\n")
                     if gsql_output_error(gres):
                         logger.debug(f"Migration: full gsql result for '{q_name}': {gres}")
                         tg_err = concise_gsql_error(gres)

@@ -97,6 +97,8 @@ def init_supportai(conn: TigerGraphConnection, graphname: str) -> tuple[dict, di
         else:
             raise Exception(f"Vector feature is not supported by the current TigerGraph version: {ver}")
 
+    setup_conn = conn.as_admin() if hasattr(conn, "as_admin") else conn
+
     logger.info(f"Checking if chat history schema needs to be created")
     if "- VERTEX ChatConversation" in current_schema:
         schema_res += " Chat history schema already exists, skipped."
@@ -105,7 +107,7 @@ def init_supportai(conn: TigerGraphConnection, graphname: str) -> tuple[dict, di
         with open(file_path, "r") as f:
             chat_schema = f.read()
         schema_res += " "
-        schema_res += conn.gsql(
+        schema_res += setup_conn.gsql(
             """USE GRAPH {}\n{}\nRUN SCHEMA_CHANGE JOB add_chat_history_schema""".format(
                 graphname, chat_schema
             )
@@ -143,7 +145,9 @@ def init_supportai(conn: TigerGraphConnection, graphname: str) -> tuple[dict, di
         with open(f"{filename}", "r") as f:
             q_body = f.read()
         q_name, extension = os.path.splitext(os.path.basename(filename))
-        q_res = conn.gsql(
+        # supportai_queries includes CHAT_HISTORY_QUERIES, whose bodies name
+        # conversation types; create them through the admin bypass.
+        q_res = setup_conn.gsql(
             """USE GRAPH {}\nBEGIN\n{}\nEND\n""".format(
                 conn.graphname, q_body
             )

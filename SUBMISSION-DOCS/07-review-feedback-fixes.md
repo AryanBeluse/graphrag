@@ -158,3 +158,25 @@ The following scenarios passed:
 - Cross-user deletion attempts did not modify data.
 
 Failure handling was also tested with LLM quota errors. The pipeline continued safely, persisted the conversation and trace, and returned a normal fallback response instead of an HTTP 500 error.
+
+---
+
+# Follow-up Review: 
+
+## 1. Centralize `gsql` protection
+
+The chat-history check now lives at a single fail-closed enforcement point inside `TigerGraphConnectionProxy.gsql`, so an agent connection cannot reach conversation data through `gsql` regardless of which call site issues it. Setup and migration paths that legitimately create chat schema and queries use an explicit, greppable `as_admin()` bypass, so initialization keeps working while every runtime connection stays guarded by default.
+
+## 2. Trace durability under load
+
+The accepted SLA is best-effort observability: trace persistence now flushes on shutdown (no loss on a normal deploy), retries transient failures idempotently, exposes configurable queue/worker/retry sizing, and meters every drop and failure for alerting (`chat_trace_write_total{outcome=...}`).
+
+Spill-to-disk/outbox and transactional (atomic) trace writes were intentionally not added they introduce disk, replay, and partial-state failure modes for no benefit on best-effort observability data, and the idempotent retry already completes any partial write, they belong only to a "guaranteed" SLA, which this data class does not require.
+
+## 3. Automated proof for MCP guards
+
+Regression tests assert that `tg_run_query`, `tg_run_installed_query`, and `tg_get_neighbors` refuse chat types and `Chat_*` queries before any database call, alongside allow-through tests for corpus access and evasion cases (lowercase, nested parameters). This locks the guards against silent regression if the tools are later refactored.
+
+## Verification
+
+All three were validated end-to-end on the rebuilt Docker stack: the proxy and tigergraph-mcp guards block chat access while corpus queries and full agentic chat succeed, the `as_admin()` setup path creates chat schema, and trace persistence was exercised on the running service including its retry, drop, and flush paths. New regression suites for the proxy `gsql` guard, the trace writer, and the MCP tools pass alongside the existing chat-history tests.

@@ -15,8 +15,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import threading
+import time
 from typing import Callable, List
 
 logger = logging.getLogger(__name__)
@@ -26,10 +28,30 @@ DEFAULT_MAX_QUEUE = 2048
 
 DEFAULT_WORKERS = 4
 
-try:  
+DEFAULT_MAX_RETRIES = 2
+
+DEFAULT_RETRY_BACKOFF = 0.5
+
+try:
     from common.metrics.prometheus_metrics import metrics as _metrics
-except Exception: 
+except Exception:
     _metrics = None
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    """Read an int (>= minimum) from the environment, falling back on bad input."""
+    try:
+        return max(minimum, int(os.getenv(name, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    """Read a non-negative float from the environment, falling back on bad input."""
+    try:
+        return max(0.0, float(os.getenv(name, default)))
+    except (TypeError, ValueError):
+        return default
 
 
 def _record(outcome: str) -> None:
@@ -43,22 +65,26 @@ def _record(outcome: str) -> None:
 class TraceWriter:
     """Drains trace writes on a pool of background worker threads.
 
-    ``submit`` never blocks and never raises so the response path is never
-    slowed by a slow database. Persistence is therefore best-effort: a burst
-    that outruns the workers past the bounded queue is dropped rather than
-    buffered without limit (which would risk memory) or blocked on (which
-    would add latency). Drops are counted and metered so they are observable
-    rather than silent.
+    ``submit`` never blocks or raises, so the response path is never slowed by
+    a slow database. Traces are best-effort observability data: transient
+    failures are retried (idempotent, keyed on message_id), a full queue drops
+    rather than block or grow unbounded, and ``flush()`` drains on graceful
+    shutdown. Every drop/failure is metered on
+    ``chat_trace_write_total{outcome=...}``.
     """
 
     def __init__(
         self,
         max_queue: int = DEFAULT_MAX_QUEUE,
         num_workers: int = DEFAULT_WORKERS,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        retry_backoff: float = DEFAULT_RETRY_BACKOFF,
     ):
         self._queue: queue.Queue = queue.Queue(maxsize=max_queue)
         self._threads: List[threading.Thread] = []
         self._num_workers = max(1, int(num_workers))
+        self._max_retries = max(0, int(max_retries))
+        self._retry_backoff = max(0.0, float(retry_backoff))
         self._lock = threading.Lock()
         self._stats_lock = threading.Lock()
         self._stopping = threading.Event()
@@ -66,6 +92,7 @@ class TraceWriter:
         self._written = 0
         self._dropped = 0
         self._failed = 0
+        self._retried = 0
 
     def _ensure_workers(self) -> None:
         with self._lock:
@@ -87,17 +114,47 @@ class TraceWriter:
             except queue.Empty:
                 continue
             try:
+                self._run_job(job)
+            finally:
+                self._queue.task_done()
+
+    def _run_job(self, job: Callable[[], None]) -> None:
+        """Run one job with a bounded, idempotent retry budget. Never raises.
+
+        A transient database blip would otherwise drop the trace on the first
+        failure; retrying a fixed, small number of times rides it out. The
+        stall is bounded by ``max_retries * retry_backoff`` on the worker
+        thread, so a fully-down database cannot wedge the pool — the job is
+        dropped after the budget and the worker moves on.
+        """
+        attempts = self._max_retries + 1
+        for attempt in range(1, attempts + 1):
+            try:
                 job()
                 with self._stats_lock:
                     self._written += 1
                 _record("written")
+                return
             except Exception:
+                if attempt < attempts:
+                    with self._stats_lock:
+                        self._retried += 1
+                    _record("retried")
+                    logger.warning(
+                        "Trace write failed (attempt %d/%d); retrying",
+                        attempt, attempts, exc_info=True,
+                    )
+                    if self._retry_backoff:
+                        time.sleep(self._retry_backoff)
+                    continue
                 with self._stats_lock:
                     self._failed += 1
                 _record("failed")
-                logger.warning("Trace write failed", exc_info=True)
-            finally:
-                self._queue.task_done()
+                logger.warning(
+                    "Trace write failed after %d attempt(s); dropping",
+                    attempts, exc_info=True,
+                )
+                return
 
     def submit(self, job: Callable[[], None]) -> bool:
         """Queue *job*. Returns False if it was dropped.
@@ -136,7 +193,13 @@ class TraceWriter:
             "written": self._written,
             "dropped": self._dropped,
             "failed": self._failed,
+            "retried": self._retried,
             "queued": self._queue.qsize(),
         }
 
-trace_writer = TraceWriter()
+trace_writer = TraceWriter(
+    max_queue=_env_int("CHAT_TRACE_QUEUE_MAX", DEFAULT_MAX_QUEUE),
+    num_workers=_env_int("CHAT_TRACE_WORKERS", DEFAULT_WORKERS),
+    max_retries=_env_int("CHAT_TRACE_WRITE_RETRIES", DEFAULT_MAX_RETRIES, minimum=0),
+    retry_backoff=_env_float("CHAT_TRACE_RETRY_BACKOFF", DEFAULT_RETRY_BACKOFF),
+)

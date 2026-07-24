@@ -48,12 +48,27 @@ _TYPED_DATA_METHODS = frozenset({
 
 
 class TigerGraphConnectionProxy:
-    def __init__(self, tg_connection: TigerGraphConnection, auth_mode: str = "pwd"):
+    def __init__(self, tg_connection: TigerGraphConnection, auth_mode: str = "pwd",
+                 admin: bool = False):
         self.original_req = tg_connection._req
         tg_connection._req = self._req
         self._tg_connection = tg_connection
         self.auth_mode = auth_mode
+        self.admin = admin
+        self._owns_connection = True
         metrics.tg_active_connections.inc()
+
+    def as_admin(self) -> "TigerGraphConnectionProxy":
+        if self.admin:
+            return self
+        twin = object.__new__(TigerGraphConnectionProxy)
+        twin.original_req = self.original_req
+        twin._tg_connection = self._tg_connection
+        twin.auth_mode = self.auth_mode
+        twin.admin = True
+        twin._owns_connection = False
+        twin._owner = self
+        return twin
 
     def __getattr__(self, name):
         original_attr = getattr(self._tg_connection, name)
@@ -63,6 +78,9 @@ class TigerGraphConnectionProxy:
             def hooked(*args, **kwargs):
                 if name == "runInstalledQuery":
                     return self._runInstalledQuery(*args, **kwargs)
+                if name == "gsql" and not self.admin:
+                    assert_agent_may_call("gsql", args, kwargs)
+                    return original_attr(*args, **kwargs)
                 if name in _TYPED_DATA_METHODS:
                     assert_agent_may_call(name, args, kwargs)
                     return original_attr(*args, **kwargs)
@@ -165,6 +183,8 @@ class TigerGraphConnectionProxy:
         return result
 
     def __del__(self):
+        if not getattr(self, "_owns_connection", False):
+            return
         try:
             if self.auth_mode == "pwd" and self._tg_connection.apiToken != '':
                 tg_version = self._tg_connection.getVer()

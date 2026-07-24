@@ -14,6 +14,7 @@
 
 import json
 import logging
+import os
 import time
 import uuid
 from base64 import b64decode
@@ -136,6 +137,29 @@ async def _start_trace_retention() -> None:
 async def _stop_trace_retention() -> None:
     if _retention_sweeper is not None:
         _retention_sweeper.stop()
+
+
+@app.on_event("shutdown")
+async def _flush_trace_writer() -> None:
+    """Drain queued execution-trace writes before the process exits.
+
+    Trace workers are daemon threads over an in-memory queue, so without this
+    a normal shutdown (deploy, scale-down, pod eviction) would silently drop
+    whatever is still queued. ``flush()`` is timeout-bounded and returns even
+    if the database is unresponsive, so this can delay shutdown by at most the
+    timeout and can never hang.
+    """
+    try:
+        from common.chat_history import trace_writer
+
+        timeout = float(os.getenv("CHAT_TRACE_FLUSH_TIMEOUT", "5.0"))
+        if not trace_writer.flush(timeout=timeout):
+            logging.getLogger(__name__).warning(
+                "Trace writer flush timed out; %d queued trace(s) may be unpersisted",
+                trace_writer.stats().get("queued", 0),
+            )
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"trace writer flush failed: {e}")
 
 
 @app.on_event("shutdown")
